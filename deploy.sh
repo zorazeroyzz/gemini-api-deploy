@@ -2,7 +2,7 @@
 # ============================================================
 #  Gemini Business2API 一键部署脚本
 #  适用系统: OpenCloudOS 9 / RHEL 9 / CentOS 9 / Rocky 9
-#  功能: 安装依赖 → 部署服务 → 配置自动注册 → 启动
+#  功能: 安装依赖 → 部署 Clash 代理 → 部署服务 → 配置自动注册 → 启动
 # ============================================================
 
 set -e
@@ -21,6 +21,14 @@ REPO_URL="https://github.com/Dreamy-rain/gemini-business2api.git"
 AUTO_REG_REPO="https://github.com/zorazeroyzz/gemini-auto-register.git"
 PORT=7860
 ADMIN_KEY=""
+
+# Clash 代理配置
+CLASH_INSTALL_DIR="/opt/mihomo"
+CLASH_SERVICE_NAME="mihomo"
+CLASH_HTTP_PORT=7890
+CLASH_SOCKS_PORT=7891
+CLASH_API_PORT=9090
+CLASH_SUB_URL=""
 
 # ─────────────────────── 工具函数 ───────────────────────
 
@@ -48,7 +56,6 @@ check_os() {
     source /etc/os-release
     log_info "检测到系统: $PRETTY_NAME"
 
-    # 检查是否为 RHEL 系列
     if ! command -v dnf &>/dev/null; then
         log_error "此脚本仅支持使用 dnf 的系统 (OpenCloudOS/RHEL/CentOS/Rocky 9)"
         exit 1
@@ -77,12 +84,30 @@ configure() {
     read -rp "管理员密钥 (留空自动生成): " input
     ADMIN_KEY="${input:-$DEFAULT_KEY}"
 
+    # Clash 代理配置
+    echo ""
+    echo -e "${CYAN}──────────── 代理配置 ────────────${NC}"
+    read -rp "Clash/V2Ray 订阅地址 (留空跳过代理部署): " input
+    CLASH_SUB_URL="${input}"
+
+    if [ -n "${CLASH_SUB_URL}" ]; then
+        read -rp "Clash HTTP 代理端口 [${CLASH_HTTP_PORT}]: " input
+        CLASH_HTTP_PORT="${input:-$CLASH_HTTP_PORT}"
+        read -rp "Clash SOCKS5 代理端口 [${CLASH_SOCKS_PORT}]: " input
+        CLASH_SOCKS_PORT="${input:-$CLASH_SOCKS_PORT}"
+    fi
+
     # 确认
     echo ""
     echo -e "${CYAN}──────────────── 配置确认 ────────────────${NC}"
     echo "  安装目录:   ${INSTALL_DIR}"
     echo "  服务端口:   ${PORT}"
     echo "  管理员密钥: ${ADMIN_KEY}"
+    if [ -n "${CLASH_SUB_URL}" ]; then
+        echo "  代理部署:   是 (HTTP=${CLASH_HTTP_PORT}, SOCKS5=${CLASH_SOCKS_PORT})"
+    else
+        echo "  代理部署:   否"
+    fi
     echo -e "${CYAN}──────────────────────────────────────────${NC}"
     echo ""
     read -rp "确认开始部署? [Y/n]: " confirm
@@ -97,7 +122,7 @@ configure() {
 install_deps() {
     log_step "安装系统依赖..."
 
-    # 启用 EPEL（Chromium 等包可能需要）
+    # 启用 EPEL
     dnf install -y epel-release 2>/dev/null || true
 
     # 基础工具
@@ -109,12 +134,12 @@ install_deps() {
         gcc \
         make \
         which \
-        tzdata
+        tzdata \
+        unzip
 
     # Python 3.11
     log_step "安装 Python 3.11..."
     dnf install -y python3.11 python3.11-pip python3.11-devel 2>/dev/null || {
-        # 如果默认仓库没有 3.11，尝试其他方式
         log_warn "默认仓库未找到 python3.11，尝试安装 python3..."
         dnf install -y python3 python3-pip python3-devel
     }
@@ -133,10 +158,8 @@ install_deps() {
     # Chromium 浏览器
     log_step "安装 Chromium 浏览器..."
     dnf install -y chromium chromium-headless 2>/dev/null || {
-        # OpenCloudOS 可能包名不同
         dnf install -y chromium-browser 2>/dev/null || {
-            log_warn "dnf 安装 Chromium 失败，尝试 snap/flatpak..."
-            # 最后手段：手动安装
+            log_warn "dnf 安装 Chromium 失败..."
             if ! command -v chromium-browser &>/dev/null && ! command -v chromium &>/dev/null; then
                 log_error "无法安装 Chromium，请手动安装后重试"
                 exit 1
@@ -179,7 +202,7 @@ install_deps() {
             2>/dev/null || true
     }
 
-    # Node.js（系统可能已有）
+    # Node.js
     if ! command -v node &>/dev/null; then
         log_step "安装 Node.js..."
         dnf install -y nodejs npm 2>/dev/null || {
@@ -192,6 +215,179 @@ install_deps() {
     log_info "系统依赖安装完成"
 }
 
+# ─────────────────────── 部署 Clash (mihomo) ───────────────────────
+
+deploy_clash() {
+    if [ -z "${CLASH_SUB_URL}" ]; then
+        log_info "跳过代理部署"
+        return 0
+    fi
+
+    log_step "部署 Clash 代理 (mihomo)..."
+
+    mkdir -p "${CLASH_INSTALL_DIR}"
+
+    # 检测架构
+    ARCH=$(uname -m)
+    case "${ARCH}" in
+        x86_64)  MIHOMO_ARCH="amd64" ;;
+        aarch64) MIHOMO_ARCH="arm64" ;;
+        *)
+            log_error "不支持的架构: ${ARCH}"
+            exit 1
+            ;;
+    esac
+
+    # 下载 mihomo (Clash Meta)
+    if [ ! -f "${CLASH_INSTALL_DIR}/mihomo" ]; then
+        log_step "下载 mihomo..."
+        MIHOMO_VERSION="v1.19.0"
+        MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/mihomo-linux-${MIHOMO_ARCH}-${MIHOMO_VERSION}.gz"
+
+        wget -q --show-progress -O "${CLASH_INSTALL_DIR}/mihomo.gz" "${MIHOMO_URL}" || {
+            # 尝试备用版本号格式
+            MIHOMO_URL="https://github.com/MetaCubeX/mihomo/releases/download/${MIHOMO_VERSION}/mihomo-linux-${MIHOMO_ARCH}.gz"
+            wget -q --show-progress -O "${CLASH_INSTALL_DIR}/mihomo.gz" "${MIHOMO_URL}" || {
+                log_error "下载 mihomo 失败，请检查网络"
+                log_warn "你可以手动安装 mihomo 到 ${CLASH_INSTALL_DIR}/mihomo"
+                return 1
+            }
+        }
+
+        gzip -d "${CLASH_INSTALL_DIR}/mihomo.gz"
+        chmod +x "${CLASH_INSTALL_DIR}/mihomo"
+        log_info "mihomo 已安装"
+    else
+        log_info "mihomo 已存在，跳过下载"
+    fi
+
+    # 下载订阅配置
+    log_step "下载订阅配置..."
+    wget -q -O "${CLASH_INSTALL_DIR}/config_sub.yaml" "${CLASH_SUB_URL}" || {
+        curl -fsSL -o "${CLASH_INSTALL_DIR}/config_sub.yaml" "${CLASH_SUB_URL}" || {
+            log_error "下载订阅配置失败"
+            return 1
+        }
+    }
+
+    # 生成 mihomo 配置文件
+    # 先提取订阅中的 proxy-providers 或 proxies，然后包装为标准配置
+    log_step "生成 mihomo 配置..."
+
+    # 检查订阅文件是否已经是完整的 Clash 配置
+    if grep -q "^proxies:" "${CLASH_INSTALL_DIR}/config_sub.yaml" 2>/dev/null || \
+       grep -q "^proxy-providers:" "${CLASH_INSTALL_DIR}/config_sub.yaml" 2>/dev/null; then
+        # 已经是完整配置，直接使用但覆盖端口
+        cp "${CLASH_INSTALL_DIR}/config_sub.yaml" "${CLASH_INSTALL_DIR}/config.yaml"
+        # 用 sed 修改端口配置
+        sed -i "s/^port:.*/port: ${CLASH_HTTP_PORT}/" "${CLASH_INSTALL_DIR}/config.yaml"
+        sed -i "s/^socks-port:.*/socks-port: ${CLASH_SOCKS_PORT}/" "${CLASH_INSTALL_DIR}/config.yaml"
+        sed -i "s/^mixed-port:.*/mixed-port: ${CLASH_HTTP_PORT}/" "${CLASH_INSTALL_DIR}/config.yaml"
+        # 确保有 allow-lan
+        if ! grep -q "^allow-lan:" "${CLASH_INSTALL_DIR}/config.yaml"; then
+            sed -i "1i allow-lan: false" "${CLASH_INSTALL_DIR}/config.yaml"
+        fi
+        # 确保有 external-controller
+        if ! grep -q "^external-controller:" "${CLASH_INSTALL_DIR}/config.yaml"; then
+            sed -i "/^allow-lan:/a external-controller: 127.0.0.1:${CLASH_API_PORT}" "${CLASH_INSTALL_DIR}/config.yaml"
+        fi
+        log_info "使用订阅提供的完整配置 (端口已调整)"
+    else
+        # 不是完整配置，创建包装配置
+        cat > "${CLASH_INSTALL_DIR}/config.yaml" <<EOF
+mixed-port: ${CLASH_HTTP_PORT}
+socks-port: ${CLASH_SOCKS_PORT}
+allow-lan: false
+mode: rule
+log-level: warning
+external-controller: 127.0.0.1:${CLASH_API_PORT}
+
+proxy-providers:
+  subscription:
+    type: http
+    url: "${CLASH_SUB_URL}"
+    interval: 3600
+    path: ./profiles/sub.yaml
+    health-check:
+      enable: true
+      interval: 600
+      url: http://www.gstatic.com/generate_204
+
+proxy-groups:
+  - name: PROXY
+    type: url-test
+    use:
+      - subscription
+    url: http://www.gstatic.com/generate_204
+    interval: 300
+
+  - name: DIRECT-GROUP
+    type: select
+    proxies:
+      - DIRECT
+
+rules:
+  - DOMAIN-SUFFIX,google.com,PROXY
+  - DOMAIN-SUFFIX,googleapis.com,PROXY
+  - DOMAIN-SUFFIX,google.com.hk,PROXY
+  - DOMAIN-SUFFIX,gemini.google.com,PROXY
+  - DOMAIN-SUFFIX,gstatic.com,PROXY
+  - DOMAIN-SUFFIX,accounts.google.com,PROXY
+  - DOMAIN-SUFFIX,duckmail.sbs,DIRECT-GROUP
+  - DOMAIN-KEYWORD,google,PROXY
+  - DOMAIN-KEYWORD,gemini,PROXY
+  - GEOIP,CN,DIRECT-GROUP
+  - MATCH,PROXY
+EOF
+        mkdir -p "${CLASH_INSTALL_DIR}/profiles"
+        log_info "已生成 mihomo 配置文件"
+    fi
+
+    # 创建 systemd 服务
+    cat > /etc/systemd/system/${CLASH_SERVICE_NAME}.service <<EOF
+[Unit]
+Description=Mihomo (Clash Meta) Proxy Service
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=${CLASH_INSTALL_DIR}
+ExecStart=${CLASH_INSTALL_DIR}/mihomo -d ${CLASH_INSTALL_DIR}
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=${CLASH_SERVICE_NAME}
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+    systemctl daemon-reload
+    systemctl enable ${CLASH_SERVICE_NAME}
+    systemctl restart ${CLASH_SERVICE_NAME}
+
+    # 等待 Clash 启动
+    sleep 3
+
+    # 验证代理是否工作
+    log_step "验证代理连接..."
+    for i in $(seq 1 10); do
+        if curl -sf --max-time 10 -x http://127.0.0.1:${CLASH_HTTP_PORT} https://www.google.com >/dev/null 2>&1; then
+            log_info "代理验证成功，可以访问 Google"
+            return 0
+        fi
+        sleep 2
+    done
+
+    log_warn "代理验证未通过（可能需要等待节点连接）"
+    log_warn "你可以稍后手动验证: curl -x http://127.0.0.1:${CLASH_HTTP_PORT} https://www.google.com"
+    return 0
+}
+
 # ─────────────────────── 部署项目 ───────────────────────
 
 deploy_project() {
@@ -202,7 +398,6 @@ deploy_project() {
         log_warn "目录已存在: ${INSTALL_DIR}"
         read -rp "是否删除并重新部署? [y/N]: " confirm
         if [[ "$confirm" =~ ^[Yy] ]]; then
-            # 停止已有服务
             systemctl stop ${SERVICE_NAME} 2>/dev/null || true
             rm -rf "${INSTALL_DIR}"
         else
@@ -257,7 +452,7 @@ deploy_auto_register() {
     AUTO_REG_DIR="${INSTALL_DIR}/auto-register"
 
     if [ -d "${AUTO_REG_DIR}" ]; then
-        cd "${AUTO_REG_DIR}" && git pull && cd ..
+        cd "${AUTO_REG_DIR}" && git pull && cd "${INSTALL_DIR}"
     else
         git clone "${AUTO_REG_REPO}" "${AUTO_REG_DIR}"
     fi
@@ -285,44 +480,7 @@ EOF
 setup_service() {
     log_step "配置 systemd 服务..."
 
-    # 确定 Chromium 路径
-    CHROMIUM_PATH=$(which chromium-browser 2>/dev/null || which chromium 2>/dev/null || echo "/usr/bin/chromium-browser")
-
-    cat > /etc/systemd/system/${SERVICE_NAME}.service <<EOF
-[Unit]
-Description=Gemini Business2API Service
-After=network.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-WorkingDirectory=${INSTALL_DIR}
-Environment=DISPLAY=:99
-Environment=PYTHONUNBUFFERED=1
-Environment=TZ=Asia/Shanghai
-EnvironmentFile=${INSTALL_DIR}/.env
-
-# 启动 Xvfb + 应用
-ExecStartPre=/bin/bash -c 'pkill Xvfb || true'
-ExecStartPre=/usr/bin/Xvfb :99 -screen 0 1280x800x24 -ac &
-ExecStart=/bin/bash -c 'sleep 1 && exec ${PYTHON_CMD} -u main.py'
-
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=${SERVICE_NAME}
-
-# 资源限制
-LimitNOFILE=65535
-TimeoutStopSec=30
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    # 创建 Xvfb 辅助服务
+    # Xvfb 辅助服务
     cat > /etc/systemd/system/${SERVICE_NAME}-xvfb.service <<EOF
 [Unit]
 Description=Xvfb Virtual Display for Gemini B2API
@@ -338,12 +496,19 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
-    # 重新配置主服务使用 Xvfb 依赖
+    # 主服务（依赖 Xvfb，如果有 Clash 还依赖 Clash）
+    AFTER_DEPS="network.target ${SERVICE_NAME}-xvfb.service"
+    REQUIRES_DEPS="${SERVICE_NAME}-xvfb.service"
+    if [ -n "${CLASH_SUB_URL}" ]; then
+        AFTER_DEPS="${AFTER_DEPS} ${CLASH_SERVICE_NAME}.service"
+        REQUIRES_DEPS="${REQUIRES_DEPS} ${CLASH_SERVICE_NAME}.service"
+    fi
+
     cat > /etc/systemd/system/${SERVICE_NAME}.service <<EOF
 [Unit]
 Description=Gemini Business2API Service
-After=network.target ${SERVICE_NAME}-xvfb.service
-Requires=${SERVICE_NAME}-xvfb.service
+After=${AFTER_DEPS}
+Requires=${REQUIRES_DEPS}
 Wants=network-online.target
 
 [Service]
@@ -415,6 +580,20 @@ SCRIPT
     chmod +x "${INSTALL_DIR}/register.sh"
 
     # 状态查看脚本
+    if [ -n "${CLASH_SUB_URL}" ]; then
+        CLASH_STATUS_BLOCK=$(cat <<'CLASH_EOF'
+echo ""
+echo "--- Clash 代理 ---"
+CLASH_EOF
+)
+        CLASH_STATUS_BLOCK="${CLASH_STATUS_BLOCK}
+systemctl status ${CLASH_SERVICE_NAME} --no-pager -l 2>/dev/null | head -5
+echo \"代理测试: \$(curl -sf --max-time 5 -x http://127.0.0.1:${CLASH_HTTP_PORT} https://www.google.com >/dev/null 2>&1 && echo 'OK' || echo '不通')\"
+"
+    else
+        CLASH_STATUS_BLOCK=""
+    fi
+
     cat > "${INSTALL_DIR}/status.sh" <<SCRIPT
 #!/bin/bash
 echo ""
@@ -430,6 +609,7 @@ systemctl status ${SERVICE_NAME} --no-pager -l 2>/dev/null | head -10
 echo ""
 echo "--- 健康检查 ---"
 curl -sf http://localhost:${PORT}/admin/health 2>/dev/null && echo " OK" || echo "服务未响应"
+${CLASH_STATUS_BLOCK}
 echo ""
 SCRIPT
     chmod +x "${INSTALL_DIR}/status.sh"
@@ -445,16 +625,48 @@ if [[ ! "\$confirm" =~ ^[Yy] ]]; then
 fi
 systemctl stop ${SERVICE_NAME} 2>/dev/null
 systemctl stop ${SERVICE_NAME}-xvfb 2>/dev/null
+systemctl stop ${CLASH_SERVICE_NAME} 2>/dev/null
 systemctl disable ${SERVICE_NAME} 2>/dev/null
 systemctl disable ${SERVICE_NAME}-xvfb 2>/dev/null
+systemctl disable ${CLASH_SERVICE_NAME} 2>/dev/null
 rm -f /etc/systemd/system/${SERVICE_NAME}.service
 rm -f /etc/systemd/system/${SERVICE_NAME}-xvfb.service
+rm -f /etc/systemd/system/${CLASH_SERVICE_NAME}.service
 systemctl daemon-reload
 echo "服务已停止并移除"
 echo "项目文件保留在: ${INSTALL_DIR}"
-echo "如需完全删除，执行: rm -rf ${INSTALL_DIR}"
+echo "Clash 文件保留在: ${CLASH_INSTALL_DIR}"
+echo "如需完全删除，执行:"
+echo "  rm -rf ${INSTALL_DIR}"
+echo "  rm -rf ${CLASH_INSTALL_DIR}"
 SCRIPT
     chmod +x "${INSTALL_DIR}/uninstall.sh"
+
+    # Clash 订阅更新脚本
+    if [ -n "${CLASH_SUB_URL}" ]; then
+        cat > "${CLASH_INSTALL_DIR}/update-sub.sh" <<SCRIPT
+#!/bin/bash
+# 更新 Clash 订阅
+echo "正在更新订阅配置..."
+wget -q -O "${CLASH_INSTALL_DIR}/config_sub.yaml" "${CLASH_SUB_URL}" || {
+    curl -fsSL -o "${CLASH_INSTALL_DIR}/config_sub.yaml" "${CLASH_SUB_URL}" || {
+        echo "下载失败"
+        exit 1
+    }
+}
+# 如果是完整配置，更新 config.yaml
+if grep -q "^proxies:" "${CLASH_INSTALL_DIR}/config_sub.yaml" 2>/dev/null || \
+   grep -q "^proxy-providers:" "${CLASH_INSTALL_DIR}/config_sub.yaml" 2>/dev/null; then
+    cp "${CLASH_INSTALL_DIR}/config_sub.yaml" "${CLASH_INSTALL_DIR}/config.yaml"
+    sed -i "s/^port:.*/port: ${CLASH_HTTP_PORT}/" "${CLASH_INSTALL_DIR}/config.yaml"
+    sed -i "s/^socks-port:.*/socks-port: ${CLASH_SOCKS_PORT}/" "${CLASH_INSTALL_DIR}/config.yaml"
+    sed -i "s/^mixed-port:.*/mixed-port: ${CLASH_HTTP_PORT}/" "${CLASH_INSTALL_DIR}/config.yaml"
+fi
+systemctl restart ${CLASH_SERVICE_NAME}
+echo "订阅已更新，Clash 已重启"
+SCRIPT
+        chmod +x "${CLASH_INSTALL_DIR}/update-sub.sh"
+    fi
 
     log_info "管理脚本已创建"
 }
@@ -487,7 +699,6 @@ start_service() {
 configure_register_settings() {
     log_step "配置自动注册参数..."
 
-    # 等待服务完全就绪
     sleep 3
 
     # 登录获取 session
@@ -498,26 +709,40 @@ configure_register_settings() {
         -d "admin_key=${ADMIN_KEY}" 2>/dev/null)
 
     if echo "${LOGIN_RESP}" | grep -q '"success"'; then
-        # 获取当前设置
         SETTINGS=$(curl -sf -b "${COOKIE_JAR}" "http://localhost:${PORT}/admin/settings" 2>/dev/null)
 
         if [ -n "${SETTINGS}" ]; then
-            # 更新关键设置: headless=false, duckmail, duckmail.sbs
-            curl -sf -b "${COOKIE_JAR}" -X POST \
-                "http://localhost:${PORT}/admin/settings" \
-                -H "Content-Type: application/json" \
-                -d '{
+            # 构建设置 JSON，包含代理配置
+            if [ -n "${CLASH_SUB_URL}" ]; then
+                PROXY_VALUE="http://127.0.0.1:${CLASH_HTTP_PORT}"
+                SETTINGS_JSON="{
+                    \"browser_headless\": false,
+                    \"temp_mail_provider\": \"duckmail\",
+                    \"register_domain\": \"duckmail.sbs\",
+                    \"proxy_for_auth\": \"${PROXY_VALUE}\"
+                }"
+            else
+                SETTINGS_JSON='{
                     "browser_headless": false,
                     "temp_mail_provider": "duckmail",
                     "register_domain": "duckmail.sbs"
-                }' >/dev/null 2>&1
+                }'
+            fi
 
-            log_info "自动注册参数已配置 (headless=false, duckmail, duckmail.sbs)"
+            curl -sf -b "${COOKIE_JAR}" -X POST \
+                "http://localhost:${PORT}/admin/settings" \
+                -H "Content-Type: application/json" \
+                -d "${SETTINGS_JSON}" >/dev/null 2>&1
+
+            log_info "自动注册参数已配置:"
+            log_info "  browser_headless = false"
+            log_info "  temp_mail_provider = duckmail"
+            log_info "  register_domain = duckmail.sbs"
+            if [ -n "${CLASH_SUB_URL}" ]; then
+                log_info "  proxy_for_auth = http://127.0.0.1:${CLASH_HTTP_PORT}"
+            fi
         else
-            log_warn "无法获取当前设置，请手动在管理面板中配置:"
-            log_warn "  browser_headless = false"
-            log_warn "  temp_mail_provider = duckmail"
-            log_warn "  domain = duckmail.sbs"
+            log_warn "无法获取当前设置，请手动在管理面板中配置"
         fi
     else
         log_warn "自动登录失败，请手动在管理面板中配置自动注册参数"
@@ -529,7 +754,6 @@ configure_register_settings() {
 # ─────────────────────── 打印部署结果 ───────────────────────
 
 print_result() {
-    # 获取公网 IP
     PUBLIC_IP=$(curl -sf --max-time 5 http://ipinfo.io/ip 2>/dev/null || \
                 curl -sf --max-time 5 http://ifconfig.me 2>/dev/null || \
                 echo "YOUR_SERVER_IP")
@@ -548,7 +772,19 @@ print_result() {
     echo "  browser_headless:   false  (防止 Google 检测)"
     echo "  temp_mail_provider: duckmail"
     echo "  domain:             duckmail.sbs"
+    if [ -n "${CLASH_SUB_URL}" ]; then
+        echo "  proxy_for_auth:     http://127.0.0.1:${CLASH_HTTP_PORT}"
+    fi
     echo ""
+    if [ -n "${CLASH_SUB_URL}" ]; then
+        echo -e "${CYAN}  ── Clash 代理 ──${NC}"
+        echo "  HTTP 代理:    http://127.0.0.1:${CLASH_HTTP_PORT}"
+        echo "  SOCKS5 代理:  socks5://127.0.0.1:${CLASH_SOCKS_PORT}"
+        echo "  API 管理:     http://127.0.0.1:${CLASH_API_PORT}"
+        echo "  更新订阅:     ${CLASH_INSTALL_DIR}/update-sub.sh"
+        echo "  查看日志:     journalctl -u ${CLASH_SERVICE_NAME} -f"
+        echo ""
+    fi
     echo -e "${CYAN}  ── 常用命令 ──${NC}"
     echo "  查看状态:     ${INSTALL_DIR}/status.sh"
     echo "  查看日志:     journalctl -u ${SERVICE_NAME} -f"
@@ -582,6 +818,7 @@ main() {
     check_os
     configure
     install_deps
+    deploy_clash
     deploy_project
     deploy_auto_register
     setup_service
