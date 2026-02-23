@@ -1,0 +1,11 @@
+{
+    "host": "http://localhost:7860",
+    "admin_key": "your-admin-key-here",
+    "count": 10,
+    "mail_provider": "duckmail",
+    "domain": "duckmail.sbs",
+    "poll_interval": 15,
+    "verify_api": true,
+    "verify_model": "gemini-2.5-flash",
+    "verify_prompt": "回复OK"
+}
