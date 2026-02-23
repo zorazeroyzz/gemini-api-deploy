@@ -1,141 +1,135 @@
-# Gemini Business2API 部署与管理工具集
+# Gemini Business2API 一键部署
 
-gemini-business2api 项目的一键部署自动化脚本与账号管理工具。
+针对 OpenCloudOS 9 深度优化的全自动部署脚本，解决了原版在国内服务器上的常见问题。
 
-## 一键部署
+## 特性
 
-在全新服务器上一键部署 gemini-business2api 服务及管理工具：
+- **全自动无交互** — 所有参数通过命令行传入，适合脚本化部署
+- **OpenCloudOS 9 适配** — 自动安装 Google Chrome（系统仓库无 chromium）
+- **自动修复 pip** — OpenCloudOS 默认不装 pip，脚本自动处理
+- **前端构建兼容** — 正确处理 vite 输出到 `../static/` 的情况
+- **内置代理部署** — 自动部署 mihomo，支持 Base64 订阅自动解析
+- **GeoIP 国内镜像** — 预下载 GeoIP 数据，避免启动卡住
+- **GitHub 镜像加速** — 所有 GitHub 下载自动走国内镜像
+- **设置 API 修复** — 使用正确的 PUT 方法更新配置
+
+## 支持系统
+
+OpenCloudOS 9 / RHEL 9 / CentOS 9 / Rocky Linux 9
+
+## 快速开始
+
+### 基础部署（无代理）
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/zorazeroyzz/gemini-api-deploy/main/deploy.sh -o deploy.sh
 chmod +x deploy.sh
-sudo ./deploy.sh
+sudo bash deploy.sh
 ```
 
-支持系统：OpenCloudOS 9 / RHEL 9 / CentOS 9 / Rocky Linux 9
+### 带代理部署（推荐）
 
-部署内容：
-- 安装 Python 3.11、Chromium、Xvfb 等全部依赖
-- 克隆并构建 gemini-business2api 项目
-- 配置服务参数（DuckMail + duckmail.sbs + headless=false）
-- 部署 systemd 服务（开机自启）
-- 部署账号管理脚本
-
-部署完成后：
 ```bash
-# 添加 10 个账号
-/opt/gemini-business2api/register.sh 10
+curl -fsSL https://raw.githubusercontent.com/zorazeroyzz/gemini-api-deploy/main/deploy.sh -o deploy.sh
+chmod +x deploy.sh
+sudo bash deploy.sh --clash-sub "你的订阅地址"
+```
 
-# 查看服务状态
+### 完整参数
+
+```bash
+sudo bash deploy.sh \
+  --port 7860 \
+  --admin-key "你的密钥" \
+  --clash-sub "https://xxx/subscribe?token=xxx" \
+  --clash-port 7890 \
+  --ghproxy "https://ghfast.top"
+```
+
+## 参数说明
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `--port` | 7860 | 服务端口 |
+| `--admin-key` | 自动生成 | 管理员密钥 |
+| `--install-dir` | /opt/gemini-business2api | 安装目录 |
+| `--clash-sub` | 空 | Clash 订阅地址（留空跳过代理） |
+| `--clash-port` | 7890 | Clash HTTP 代理端口 |
+| `--ghproxy` | https://ghfast.top | GitHub 镜像地址 |
+| `--skip-clash` | - | 跳过代理部署 |
+| `--skip-register` | - | 跳过自动注册脚本 |
+
+## 部署完成后
+
+```bash
+# 查看状态
 /opt/gemini-business2api/status.sh
+
+# 注册账号
+/opt/gemini-business2api/register.sh 10
 
 # 查看日志
 journalctl -u gemini-b2api -f
+
+# 重启服务
+systemctl restart gemini-b2api
+
+# 卸载
+/opt/gemini-business2api/uninstall.sh
 ```
 
-## 前置条件（手动部署时）
+## 部署内容
 
-- 已部署并运行 [gemini-business2api](https://github.com/Dreamy-rain/gemini-business2api) 服务
-- 服务已配置好浏览器环境（Chromium + Xvfb）
-- Python 3.8+ 和 `requests` 库
+- **gemini-business2api** — 主服务（Python + FastAPI）
+- **mihomo** — Clash Meta 代理（可选）
+- **Xvfb** — 虚拟显示（浏览器自动化需要）
+- **Google Chrome** — 浏览器引擎
+- **自动注册脚本** — 批量注册 Gemini 账号
 
-## 关键配置
+## 配置说明
 
-| 配置项 | 推荐值 | 说明 |
-|---|---|---|
-| `browser_headless` | `false` | headless 模式会被检测拦截 |
-| `temp_mail_provider` | `duckmail` | 无需 API Key 即可使用 |
-| `domain` | `duckmail.sbs` | **必须**用此域名，其他域名会 403 |
+部署脚本会自动配置以下注册参数：
 
-## 使用方法
+| 配置项 | 值 | 说明 |
+|--------|-----|------|
+| browser_headless | false | headless 模式会被检测拦截 |
+| temp_mail_provider | duckmail | 无需 API Key |
+| domain | duckmail.sbs | 必须用此域名 |
+| proxy_for_auth | http://127.0.0.1:7890 | 代理（如部署了 mihomo） |
 
-### 快速开始
+## 与原版的区别
+
+| 问题 | 原版 | 本版 |
+|------|------|------|
+| 交互式提示 | 多处 read 等待输入 | 全自动，命令行参数 |
+| Chromium 安装 | dnf install chromium（OpenCloudOS 无此包） | 自动添加 Google Chrome 仓库 |
+| pip 缺失 | 直接调用 pip 失败 | 自动检测并安装 pip |
+| 前端构建检查 | 检查 frontend/dist/ | 兼容 vite 输出到 ../static/ |
+| 设置 API | POST 方法（405 错误） | 正确使用 PUT 方法 |
+| 代理订阅 | 仅支持 YAML 格式 | 自动解析 Base64 编码订阅 |
+| GeoIP 数据 | 启动时在线下载（需翻墙） | 预下载国内镜像 |
+| GitHub 访问 | 直连（国内超时） | 自动走 ghfast.top 镜像 |
+
+## 故障排查
 
 ```bash
-# 添加 10 个账号（默认）
-python auto_register.py -k YOUR_ADMIN_KEY
+# 查看部署日志
+tail -50 /var/log/gemini-b2api-deploy.log
 
-# 添加 5 个账号
-python auto_register.py -n 5 -k YOUR_ADMIN_KEY
+# 查看服务日志
+journalctl -u gemini-b2api -f
 
-# 指定远程服务地址
-python auto_register.py -n 10 -k YOUR_ADMIN_KEY --host http://vps:7860
+# 查看代理日志
+journalctl -u mihomo -f
 
-# 跳过 API 验证
-python auto_register.py -n 10 -k YOUR_ADMIN_KEY --no-verify
+# 测试代理
+curl -x http://127.0.0.1:7890 https://www.gstatic.com/generate_204
+
+# 测试 Google 连通性
+curl -x http://127.0.0.1:7890 https://accounts.google.com
 ```
 
-### 使用配置文件
+## 致谢
 
-```bash
-cp config.example.json config.json
-# 编辑 config.json 填入你的 admin_key
-python auto_register.py --config config.json
-```
-
-### 使用环境变量
-
-```bash
-export ADMIN_KEY=your-admin-key
-python auto_register.py -n 10
-```
-
-## 命令行参数
-
-| 参数 | 说明 | 默认值 |
-|---|---|---|
-| `-n, --count` | 账号数量 | 10 |
-| `-k, --admin-key` | 管理面板 ADMIN_KEY | 环境变量 `ADMIN_KEY` |
-| `--host` | 服务地址 | `http://localhost:7860` |
-| `--domain` | 邮箱域名 | `duckmail.sbs` |
-| `--mail-provider` | 邮箱提供商 | `duckmail` |
-| `--verify` | 完成后验证 API | 默认开启 |
-| `--no-verify` | 跳过 API 验证 | - |
-| `--config` | 配置文件路径 | - |
-| `--poll-interval` | 轮询间隔(秒) | 15 |
-
-## 运行示例
-
-```
-═══════════════════════════════════════════════════════════
-  Gemini Business2API 账号管理
-═══════════════════════════════════════════════════════════
-  服务地址:    http://localhost:7860
-  数量:        5
-  邮箱提供商:  duckmail
-  邮箱域名:    duckmail.sbs
-  API 验证:    是
-═══════════════════════════════════════════════════════════
-
-[01:46:16] → 检查服务状态...
-[01:46:16] ✓ 服务正常
-[01:46:16] → 登录管理面板...
-[01:46:16] ✓ 登录成功
-[01:46:16] ✓ 当前已有 4 个账号
-[01:46:16] → 启动任务: 5 个账号 (邮箱=duckmail, 域名=duckmail.sbs)
-[01:46:16] ✓ 任务 ID: 2a959c1f-...
-[01:47:27] ✓ 进度: 1/5  成功: 1  失败: 0  耗时: 71s
-[01:48:28] ✓ 进度: 2/5  成功: 2  失败: 0  耗时: 132s
-[01:49:28] ✓ 进度: 3/5  成功: 3  失败: 0  耗时: 192s
-[01:50:28] ✓ 进度: 4/5  成功: 4  失败: 0  耗时: 252s
-[01:51:28] ✓ 任务完成，总耗时 312 秒
-[01:51:28] ✓ 完成: 新增 5 个账号，总计 9 个
-
-  #  邮箱                                       状态   剩余时间   可用
-────────────────────────────────────────────────────────────────────
-  1  t7408giarrqjxde@duckmail.sbs               正常   11.6 小时  是
-  2  t8518k3kby48pr5@duckmail.sbs               正常   12.0 小时  是
-  ...
-
-[01:51:29] → 验证 API: 模型=gemini-2.5-flash
-[01:51:31] ✓ API 验证成功! 模型回复: OK
-
-[01:51:31] ✓ 全部完成!
-```
-
-## 注意事项
-
-- 每个账号处理耗时约 60-70 秒
-- 账号 session 有效期约 12 小时，需配合服务端定时刷新功能
-- DuckMail 公共 API 无速率限制，但建议合理使用
-- 本工具仅限个人学习和技术研究，禁止商业用途
+- [gemini-business2api](https://github.com/Dreamy-rain/gemini-business2api) — 主项目
+- [mihomo](https://github.com/MetaCubeX/mihomo) — Clash Meta 内核
