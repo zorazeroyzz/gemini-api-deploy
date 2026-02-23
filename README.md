@@ -2,7 +2,38 @@
 
 批量自动注册 Gemini Business 账号，注册完成后自动验证 API 可用性。
 
-## 前置条件
+## 一键部署
+
+在全新服务器上一键部署 gemini-business2api + 自动注册脚本：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zorazeroyzz/gemini-auto-register/main/deploy.sh -o deploy.sh
+chmod +x deploy.sh
+sudo ./deploy.sh
+```
+
+支持系统：OpenCloudOS 9 / RHEL 9 / CentOS 9 / Rocky Linux 9
+
+部署内容：
+- 安装 Python 3.11、Chromium、Xvfb 等全部依赖
+- 克隆并构建 gemini-business2api 项目
+- 自动配置注册参数（DuckMail + duckmail.sbs + headless=false）
+- 注册 systemd 服务（开机自启）
+- 部署自动注册脚本
+
+部署完成后：
+```bash
+# 注册 10 个账号
+/opt/gemini-business2api/register.sh 10
+
+# 查看服务状态
+/opt/gemini-business2api/status.sh
+
+# 查看日志
+journalctl -u gemini-b2api -f
+```
+
+## 前置条件（手动部署时）
 
 - 已部署并运行 [gemini-business2api](https://github.com/Dreamy-rain/gemini-business2api) 服务
 - 服务已配置好浏览器环境（Chromium + Xvfb）
