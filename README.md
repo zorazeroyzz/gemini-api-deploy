@@ -92,9 +92,10 @@ systemctl restart gemini-b2api
 
 | 配置项 | 值 | 说明 |
 |--------|-----|------|
-| browser_headless | false | headless 模式会被检测拦截 |
-| temp_mail_provider | duckmail | 无需 API Key |
-| domain | duckmail.sbs | 必须用此域名 |
+| browser_mode | normal | 浏览器模式: normal/silent/headless |
+| browser_headless | false | 兼容字段，保持 false |
+| temp_mail_provider | duckmail | 支持 duckmail/moemail/freemail/gptmail/cfmail |
+| register_domain | duckmail.sbs | DuckMail 专用域名 |
 | proxy_for_auth | http://127.0.0.1:7890 | 代理（如部署了 mihomo） |
 
 ## 与原版的区别

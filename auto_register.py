@@ -99,7 +99,7 @@ class GeminiAPIClient:
     def health_check(self):
         """检查服务健康状态"""
         try:
-            resp = self.session.get(self._url("/admin/health"), timeout=10)
+            resp = self.session.get(self._url("/health"), timeout=10)
             return resp.status_code == 200 and resp.json().get("status") == "ok"
         except Exception as e:
             log(f"健康检查失败: {e}", "ERROR")

@@ -7,7 +7,7 @@
 
 set -euo pipefail
 
-SCRIPT_VERSION="3.0"
+SCRIPT_VERSION="3.1"
 LOG_FILE="/var/log/gemini-b2api-deploy.log"
 INSTALL_DIR="/opt/gemini-business2api"
 SERVICE_NAME="gemini-b2api"
@@ -690,6 +690,7 @@ start_and_configure() {
 import sys, json
 d = json.load(sys.stdin)
 d['basic']['browser_headless'] = False
+d['basic']['browser_mode'] = 'normal'
 d['basic']['temp_mail_provider'] = 'duckmail'
 d['basic']['register_domain'] = 'duckmail.sbs'
 proxy = '${CLASH_SUB_URL}'
@@ -700,7 +701,7 @@ print(json.dumps(d))
 " | curl -sf -b "${cookie_jar}" -X PUT "http://localhost:${PORT}/admin/settings" \
                 -H "Content-Type: application/json" -d @- >/dev/null 2>&1
 
-            log_info "注册参数已配置 (headless=false, duckmail, duckmail.sbs)"
+            log_info "注册参数已配置 (browser_mode=normal, duckmail, duckmail.sbs)"
             [ -n "${CLASH_SUB_URL}" ] && [ "$SKIP_CLASH" != true ] && \
                 log_info "代理已配置: http://127.0.0.1:${CLASH_HTTP_PORT}"
         fi
